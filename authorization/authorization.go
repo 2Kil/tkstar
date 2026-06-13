@@ -100,16 +100,16 @@ func (c *Client) GetAccredit() ([]Accredit, error) {
 	}
 
 	if jumpURL != "" {
-		// 创建新的请求以应用 Header
-		req, err := http.NewRequest("GET", jumpURL, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
-		req.Header.Set("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
-
 		// 重试获取 tableData 逻辑
 		for i := 0; i < 2; i++ {
+			// 每次迭代创建新的请求，避免 body 被消费后重试失败
+			req, err := http.NewRequest("GET", jumpURL, nil)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+			req.Header.Set("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
+
 			resp, err := c.httpClient.Do(req)
 			if err != nil {
 				log.Println("Error following jump URL:", err)
@@ -179,18 +179,26 @@ func (c *Client) CheckAccredit(key string) bool {
 	c.mu.Unlock()
 
 	if len(data) == 0 {
-		var err error
+		var err2 error
 		// 1. 如果配置了密码，优先尝试 GetAccredit2 (API方式)
 		if c.Pwd != "" {
-			data, err = c.GetAccredit2()
+			data, err2 = c.GetAccredit2()
 		}
 
 		// 2. 如果没有数据（未配置密码或API失败），尝试 GetAccredit (网页解析方式)
+		var err1 error
 		if len(data) == 0 {
-			data, err = c.GetAccredit()
+			data, err1 = c.GetAccredit()
 		}
 
-		if err != nil {
+		// 保留所有错误信息，便于排查
+		if err2 != nil {
+			log.Printf("GetAccredit2 failed: %v", err2)
+		}
+		if err1 != nil {
+			log.Printf("GetAccredit failed: %v", err1)
+		}
+		if len(data) == 0 {
 			return false
 		}
 	}

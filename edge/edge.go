@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -43,8 +44,19 @@ var (
 	browserCancel context.CancelFunc
 
 	relativePath = "./edge_user_data"
-	absPath, _   = filepath.Abs(relativePath)
+	absPath      = initAbsPath()
 )
+
+func initAbsPath() string {
+	// 优先基于可执行文件路径定位，避免受工作目录变化影响
+	exePath, err := os.Executable()
+	if err == nil {
+		return filepath.Join(filepath.Dir(exePath), "edge_user_data")
+	}
+	// 回退到当前工作目录
+	abs, _ := filepath.Abs(relativePath)
+	return abs
+}
 
 func reportStatus(err error) {
 	select {

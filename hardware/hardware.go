@@ -12,6 +12,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -21,6 +22,36 @@ var (
 	user32               = syscall.NewLazyDLL("user32.dll")
 	procGetAsyncKeyState = user32.NewProc("GetAsyncKeyState")
 )
+
+// wmicCmd 优先使用 PowerShell Get-CimInstance，回退到 wmic（兼容旧系统）。
+func wmicCmd(class, field string) string {
+	// 优先使用 PowerShell（Windows 10 21H1+ / Windows 11 推荐方式）
+	cmd := exec.Command("powershell", "-NoProfile", "-Command",
+		fmt.Sprintf("(Get-CimInstance %s).%s", class, field))
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.Output()
+	if err == nil {
+		result := strings.TrimSpace(string(out))
+		if result != "" {
+			return result
+		}
+	}
+
+	// 回退到 wmic（兼容旧版 Windows）
+	cmd = exec.Command("wmic", strings.ToLower(class), "get", field)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err = cmd.Output()
+	if err == nil {
+		result := string(out)
+		result = strings.Replace(result, field, "", 1)
+		result = strings.TrimSpace(result)
+		if result != "" {
+			return result
+		}
+	}
+
+	return ""
+}
 
 // SysGetSerialKey 获取设备硬件特征码。
 // 结合 MAC 地址、系统 UUID 和硬盘序列号生成唯一的简短机器码。
@@ -41,37 +72,32 @@ func SysGetSerialKey() string {
 	}
 
 	// 2. 获取系统UUID (Windows)
-	var uuid string
-	// 注意：wmic 在较新的 Windows 版本中可能被废弃，但在旧系统中可用
-	cmd := exec.Command("wmic", "csproduct", "get", "UUID")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} // 隐藏命令窗口
-	uuidOut, err := cmd.Output()
-	if err != nil {
+	uuid := wmicCmd("Win32_ComputerSystemProduct", "UUID")
+	if uuid == "" {
 		uuid = "BC2B8100-FD76-11EE-BE99-DA3F32D12700" // 默认值
-	} else {
-		uuid = string(uuidOut)
 	}
 
-	// 3. 获取硬盘串号 (主硬盘 Index=0)
-	var diskSerial string
-	cmd = exec.Command("wmic", "diskdrive", "where", "Index=0", "get", "SerialNumber")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} // 隐藏命令窗口
-	diskSerialOut, err := cmd.Output()
-	if err != nil {
+	// 3. 获取硬盘串号 (主硬盘)
+	diskSerial := wmicCmd("Win32_DiskDrive", "SerialNumber")
+	if diskSerial == "" {
 		diskSerial = "6479_A771_20C0_1EFF" // 默认值
-	} else {
-		// 清理 wmic 输出
-		diskSerial = string(diskSerialOut)
-		diskSerial = strings.Replace(diskSerial, "SerialNumber", "", 1)
-		diskSerial = strings.TrimSpace(diskSerial)
 	}
 
-	// 4. 生成 MD5 摘要
+	// 4. 处理无 MAC 地址的场景（补充唯一性）
+	if mac == "" {
+		// 使用主机名作为补充因子
+		hostname, err := os.Hostname()
+		if err == nil && hostname != "" {
+			mac = hostname
+		}
+	}
+
+	// 5. 生成 MD5 摘要
 	rawKey := mac + uuid + diskSerial
 	hash := md5.Sum([]byte(rawKey))
 	reg0 := strings.ToUpper(fmt.Sprintf("%x", hash))
 
-	// 5. 字符混淆替换
+	// 6. 字符混淆替换
 	replacer := strings.NewReplacer(
 		"O", "0",
 		"o", "0",
@@ -82,7 +108,7 @@ func SysGetSerialKey() string {
 	)
 	reg0 = replacer.Replace(reg0)
 
-	// 6. 截取并拼接生成最终机器码
+	// 7. 截取并拼接生成最终机器码
 	// 确保字符串长度足够，防止切片越界 (MD5 长度为 32)
 	if len(reg0) < 14 {
 		return reg0 // 理论上 MD5 不会小于 32，但做防御性编程
